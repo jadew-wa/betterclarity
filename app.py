@@ -24,16 +24,56 @@ def get_base64_image(image_path):
 
 card_base64 = get_base64_image("Card.png")
 
-# Function to fetch data directly from Microsoft Clarity Data Export API
+# Function to fetch data directly from Microsoft Clarity Data Export API (with dual-endpoint fallback)
 def fetch_clarity_api_data(project_id, api_token, start_date, end_date, page_path=".*"):
-    # Correct Microsoft Clarity Data Export API Endpoint
-    url = f"https://www.clarity.ms/export-data/api/v1/project-live-insights/{project_id}"
+    # Clean project_id in case a full URL was pasted
+    clean_project_id = str(project_id).strip().rstrip("/").split("/")[-1]
+
+    # Endpoint URLs (Tries both official Clarity API specs)
+    endpoints = [
+        f"https://www.clarity.ms/export-data/api/v1/project-live-insights/{clean_project_id}",
+        f"https://www.clarity.ms/export-data/api/v1/projects/{clean_project_id}/heatmaps"
+    ]
     
     headers = {
         "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json",
         "User-Agent": "WeekdayAssembly-CROTool/1.0"
     }
+    
+    total_days = (end_date - start_date).days + 1
+    num_days = min(max(total_days, 1), 30)
+    
+    payload = {
+        "numOfDays": num_days,
+        "dimension": "URL",
+        "regex": page_path
+    }
+    
+    for url in endpoints:
+        try:
+            req = urllib.request.Request(
+                url, 
+                data=json.dumps(payload).encode('utf-8'), 
+                headers=headers, 
+                method="POST"
+            )
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+                if data:
+                    return pd.DataFrame(data)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue # Try next endpoint
+            else:
+                st.error(f"Clarity API Error ({e.code}): {e.reason}")
+                return None
+        except Exception as e:
+            st.error(f"Error connecting to Clarity API: {e}")
+            return None
+
+    st.error("HTTP Error 404: Invalid Project ID or API Token endpoint path. Please verify credentials in Streamlit Secrets.")
+    return None
     
     # Calculate days (Clarity API caps queries to max 30 days)
     total_days = (end_date - start_date).days + 1
