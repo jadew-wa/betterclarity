@@ -24,19 +24,69 @@ def get_base64_image(image_path):
 
 card_base64 = get_base64_image("Card.png")
 
-# Official Microsoft Clarity Data Export API Connector (GET Request)
-def fetch_clarity_api_data(project_id, api_token, start_date, end_date, page_path=".*"):
+# Helper function to parse Clarity export file names dynamically
+def parse_clarity_filename(filename):
+    base = filename.rsplit(".", 1)[0] if "." in filename else filename
+    if base.startswith("Clarity_"):
+        base = base[8:]
+
+    date_match = re.search(r"_(\d{2}-\d{2}-\d{4}.*)$", base)
+    if date_match:
+        date_str = date_match.group(1)
+        main_part = base[: date_match.start()]
+    else:
+        date_str = ""
+        main_part = base
+
+    parts = main_part.split("_")
+    parts = [p.strip() for p in parts if p.strip() and p.strip() != "-"]
+
+    heatmap_type = "Tap"
+    device_type = "Mobile"
+    project_parts = []
+
+    for p in parts:
+        p_lower = p.lower()
+        if p_lower in ["tap", "scroll", "click", "area", "conversion", "attention"]:
+            heatmap_type = p.capitalize()
+        elif p_lower in ["mobile", "desktop", "tablet", "pc"]:
+            if p_lower == "pc":
+                device_type = "Desktop PC"
+            else:
+                device_type = p.capitalize()
+        else:
+            project_parts.append(p)
+
+    project_name = (
+        " ".join(project_parts).upper() if project_parts else "CLARITY PROJECT"
+    )
+    date_formatted = date_str.split()[0] if date_str else ""
+
+    display_title = (
+        f"{project_name} — {heatmap_type.upper()} ({device_type.upper()})"
+    )
+    if date_formatted:
+        display_title += f" [{date_formatted}]"
+
+    clean_file_prefix = (
+        f"{project_name.replace(' ', '_')}_{heatmap_type}_{device_type.replace(' ', '_')}"
+    )
+    if date_formatted:
+        clean_file_prefix += f"_{date_formatted}"
+
+    export_filename = f"{clean_file_prefix}_Cleaned_Report.csv"
+
+    return display_title, export_filename, project_name
+
+# Official Microsoft Clarity Data Export API Connector
+def fetch_clarity_api_data(project_id, api_token, start_date, end_date):
     clean_project_id = str(project_id).strip().rstrip("/").split("/")[-1]
-    
-    # Calculate days requested (1 to 30 days max allowed by Clarity API)
     total_days = (end_date - start_date).days + 1
     num_days = min(max(total_days, 1), 30)
     
-    # Official Microsoft Clarity Data Export API Endpoint
     url = f"https://www.clarity.ms/export-data/api/v1/project-live-insights?numOfDays={num_days}"
-    
     headers = {
-        "Authorization": f"Bearer {api_token}",
+        "Authorization": f"Bearer {api_token.strip()}",
         "Content-Type": "application/json",
         "User-Agent": "WeekdayAssembly-CROTool/1.0"
     }
@@ -45,54 +95,24 @@ def fetch_clarity_api_data(project_id, api_token, start_date, end_date, page_pat
         req = urllib.request.Request(url, headers=headers, method="GET")
         with urllib.request.urlopen(req) as response:
             data = json.loads(response.read().decode())
-            
             if not data:
-                st.warning("Connected successfully, but Clarity returned 0 records for this time range.")
-                return None
-                
+                return None, "Connected successfully, but Microsoft Clarity returned 0 records for this timeframe."
+            
             if isinstance(data, list):
                 df = pd.DataFrame(data)
             elif isinstance(data, dict):
                 df = pd.DataFrame([data])
             else:
                 df = pd.DataFrame(data)
-            
-            # Filter by project ID if API returns multiple project records
+                
             if "projectId" in df.columns:
                 df = df[df["projectId"] == clean_project_id]
                 
-            return df
-            
+            return df, None
     except urllib.error.HTTPError as e:
-        st.error(f"Clarity API Error ({e.code}): {e.reason}. Please verify your API Token in Streamlit Secrets.")
-        return None
+        return None, f"Clarity API Error ({e.code}): {e.reason}. Please verify your Project ID and API Token."
     except Exception as e:
-        st.error(f"Error connecting to Clarity API: {e}")
-        return None
-    
-    # Calculate days (Clarity API caps queries to max 30 days)
-    total_days = (end_date - start_date).days + 1
-    num_days = min(max(total_days, 1), 30)
-    
-    payload = {
-        "numOfDays": num_days,
-        "dimension": "URL",
-        "regex": page_path
-    }
-    
-    try:
-        req = urllib.request.Request(
-            url, 
-            data=json.dumps(payload).encode('utf-8'), 
-            headers=headers, 
-            method="POST"
-        )
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode())
-            return pd.DataFrame(data)
-    except Exception as e:
-        st.error(f"Error connecting to Clarity API: {e}")
-        return None
+        return None, f"Error connecting to Clarity API: {e}"
 
 # Brand CSS Injection
 st.markdown(
@@ -160,6 +180,18 @@ st.markdown(
         margin-bottom: 1.5rem !important;
     }}
 
+    .disclaimer-note {{
+        background-color: #FFFEF0 !important;
+        border-left: 3px solid #564941 !important;
+        padding: 0.75rem 1rem !important;
+        font-size: 0.75rem !important;
+        color: #564941 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.05em !important;
+        margin-top: 1rem;
+        margin-bottom: 1rem;
+    }}
+
     div[data-testid="stButton"] > button, .stDownloadButton > button {{
         background-color: #564941 !important;
         color: #FFFEF0 !important;
@@ -196,12 +228,12 @@ st.sidebar.markdown("<br>", unsafe_allow_html=True)
 st.sidebar.title("CLIENT WORKSPACE")
 active_client = st.sidebar.selectbox(
     "SELECT CLIENT PROJECT",
-    ["DU/ER UK", "PARKIT EU", "HUF Worldwide EU"]
+    ["DU/ER UK", "PARKIT EU", "HUF Worldwide EU", "Jansport EU"]
 )
 
 st.sidebar.title("DATE TIMEFRAME")
 today = datetime.date.today()
-start_date = st.sidebar.date_input("START DATE", today - datetime.timedelta(days=30))
+start_date = st.sidebar.date_input("START DATE", today - datetime.timedelta(days=14))
 end_date = st.sidebar.date_input("END DATE", today)
 
 st.sidebar.title("JOURNEY SCOPE")
@@ -212,9 +244,9 @@ journey_scope = st.sidebar.selectbox(
 
 st.sidebar.markdown("---")
 page = st.sidebar.radio(
-    "NAVIGATION",
+    "SELECT VIEW",
     [
-        "1. CLARITY API DATA SYNC",
+        "1. DATA REFINEMENT & API SYNC",
         "2. EXECUTIVE SUMMARY",
         "3. COMPONENT AUDIT",
         "4. DYNAMIC CRO RECOMMENDATIONS",
@@ -297,7 +329,55 @@ def categorise_selector(selector):
     clean_node = re.sub(r':nth-of-type\(\d+\)', '', last_node)
     return f"OTHER: {clean_node.strip().upper()}"
 
-# Main App Header
+# Dynamic CRO Recommendation Generator
+def generate_dynamic_cro_insights(consolidated_df, pct_col_name):
+    quick_wins = []
+    strategic_tests = []
+
+    component_dict = dict(zip(consolidated_df['Clean Label'], consolidated_df[pct_col_name]))
+
+    swatch_share = sum(val for key, val in component_dict.items() if "SWATCH" in key)
+    if swatch_share > 5.0:
+        quick_wins.append(
+            f"Explicit Variant Labeling ({swatch_share:.1f}% Share): High colour swatch engagement indicates strong variant consideration. Add explicit selected variant text (e.g., 'Colour: Olive') directly adjacent to swatches to reduce cognitive load."
+        )
+        strategic_tests.append(
+            f"Variant Stock Status Teasers: Test displaying real-time stock availability indicators (e.g., 'Low Stock') directly when hovering or tapping colour swatches."
+        )
+
+    size_share = sum(val for key, val in component_dict.items() if "SIZE" in key)
+    if size_share > 5.0:
+        quick_wins.append(
+            f"Size Chart Proximity ({size_share:.1f}% Share): Sizing represents a primary friction point. Pin the Size Guide directly adjacent to the size selector buttons."
+        )
+        strategic_tests.append(
+            f"Interactive Fit Recommender: Test integrating an interactive fit calculator or auto-selecting default active sizes."
+        )
+
+    gallery_share = sum(val for key, val in component_dict.items() if "GALLERY" in key)
+    if gallery_share < 5.0:
+        quick_wins.append(
+            f"Gallery Visual Teasers ({gallery_share:.1f}% Share): Low explicit image tapping suggests passive swiping. Add visible thumbnail tracks or numbered pill badges (e.g., '1 of 6') to prompt visual discovery."
+        )
+        strategic_tests.append(
+            f"Short-Form Video as Slide 2: Test introducing a short product-in-motion video loop as the second slide in the main gallery slider."
+        )
+
+    accordion_share = sum(val for key, val in component_dict.items() if "ACCORDION" in key)
+    if accordion_share > 8.0:
+        quick_wins.append(
+            f"Above-the-Fold Spec Elevation ({accordion_share:.1f}% Share): High accordion engagement shows users searching for detailed specs (Fabric/Fit). Surface key bullet points directly under the main title."
+        )
+
+    atc_share = sum(val for key, val in component_dict.items() if "ADD TO CART" in key)
+    if atc_share < 5.0:
+        quick_wins.append(
+            f"CTA Contrast & Sticky Bar ({atc_share:.1f}% Share): Add-to-cart clicks represent under 5% of overall engagement. Increase CTA contrast using high-contrast brand styling (`#564941`) and implement a persistent sticky ATC bar on scroll."
+        )
+
+    return quick_wins, strategic_tests
+
+# Main Header
 col_logo, col_space = st.columns([1, 3])
 with col_logo:
     st.image("weekday assembly._NPGoat.png", width=260)
@@ -312,98 +392,195 @@ if "report_title" not in st.session_state:
 if "project_name" not in st.session_state:
     st.session_state.project_name = active_client
 
-# PAGE 1: Clarity API Data Sync
-if page == "1. CLARITY API DATA SYNC":
-    st.title("Clarity API Journey Analytics")
-    st.subheader(f"DIRECT SYNC — {active_client}")
+# PAGE 1: Data Refinement & Sync
+if page == "1. DATA REFINEMENT & API SYNC":
+    st.title("Clarity Heatmap Refinement Tool")
+    
+    st.markdown("<div class='report-section'>", unsafe_allow_html=True)
+    st.subheader(f"OPTION A: DIRECT CLARITY API SYNC — {active_client}")
     st.write(f"Fetching analytics for **{journey_scope}** from **{start_date}** to **{end_date}**.")
 
+    client_key = active_client.lower().replace(" ", "_").replace("/", "").replace("worldwide", "").strip("_")
+    
+    secret_proj_id = ""
+    secret_api_token = ""
+    if "clarity_projects" in st.secrets:
+        for k in st.secrets["clarity_projects"]:
+            if k in client_key or client_key in k:
+                secret_proj_id = st.secrets["clarity_projects"][k].get("project_id", "")
+                secret_api_token = st.secrets["clarity_projects"][k].get("api_token", "")
+                break
+
+    col_api1, col_api2 = st.columns(2)
+    with col_api1:
+        input_project_id = st.text_input("CLARITY PROJECT ID", value=secret_proj_id, placeholder="e.g. k8s9x2p1")
+    with col_api2:
+        input_api_token = st.text_input("CLARITY API TOKEN", value=secret_api_token, type="password", placeholder="Bearer Token")
+
     if st.button("⚡ FETCH LIVE CLARITY API DATA"):
-        client_key = active_client.lower().replace(" ", "_").replace("/", "")
-        
-        if "clarity_projects" in st.secrets and client_key in st.secrets["clarity_projects"]:
-            proj_id = st.secrets["clarity_projects"][client_key]["project_id"]
-            api_tok = st.secrets["clarity_projects"][client_key]["api_token"]
-            
-            regex_pattern = ".*"
-            if journey_scope == "PRODUCT PAGES (PDP)":
-                regex_pattern = ".*/products/.*"
-            elif journey_scope == "COLLECTION PAGES (PLP)":
-                regex_pattern = ".*/collections/.*"
-            elif journey_scope == "HOMEPAGE":
-                regex_pattern = "^https?://[^/]+/?$"
-
-            with st.spinner("Connecting to Microsoft Clarity API..."):
-                api_df = fetch_clarity_api_data(proj_id, api_tok, start_date, end_date, page_path=regex_pattern)
-                if api_df is not None and not api_df.empty:
-                    st.success("Successfully synchronized data from Microsoft Clarity!")
-                    st.dataframe(api_df)
-                else:
-                    st.warning("No data returned for this date range and journey scope.")
+        if not input_project_id or not input_api_token:
+            st.error("Please enter both a Project ID and API Token above (or configure Streamlit Secrets).")
         else:
-            st.warning(f"⚠️ API credentials for '{active_client}' not found in Streamlit Secrets. Please configure `st.secrets`.")
+            with st.spinner("Connecting to Microsoft Clarity Data Export API..."):
+                api_df, error_msg = fetch_clarity_api_data(input_project_id, input_api_token, start_date, end_date)
+                if error_msg:
+                    st.error(error_msg)
+                elif api_df is not None and not api_df.empty:
+                    st.success("Successfully synchronized data from Microsoft Clarity!")
+                    st.dataframe(api_df, use_container_width=True)
+                else:
+                    st.info("Connected to Clarity API, but 0 recorded heatmap events were found for this timeframe.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.subheader("OR MANUAL CSV FALLBACK")
+    st.markdown("<div class='report-section'>", unsafe_allow_html=True)
+    st.subheader("OPTION B: MANUAL CSV UPLOAD FALLBACK")
     uploaded_file = st.file_uploader("UPLOAD RAW CLARITY CSV EXPORT", type=["csv"])
+    exclude_cookies = st.checkbox("EXCLUDE COOKIE CONSENT BANNER CLICKS FROM CRO ANALYSIS", value=True)
 
     if uploaded_file is not None:
         try:
+            report_title, dynamic_export_filename, project_name = parse_clarity_filename(uploaded_file.name)
+            st.session_state.report_title = report_title
+            st.session_state.project_name = project_name if project_name else active_client
+
             content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
             raw_lines = content.splitlines()
             header_idx = next((i for i, line in enumerate(raw_lines) if '"Rank","Button"' in line), None)
 
-            if header_idx is not None:
+            if header_idx is None:
+                st.error("Invalid Clarity CSV format: Unable to locate data table header ('Rank','Button').")
+            else:
                 data_str = "\n".join(raw_lines[header_idx:])
                 df = pd.read_csv(io.StringIO(data_str))
 
-                count_col = 'Clicks' if 'Clicks' in df.columns else 'Taps' if 'Taps' in df.columns else df.columns[2]
-                df[count_col] = df[count_col].astype(str).str.replace(",", "").astype(int)
-                df["Clean Label"] = df["Button"].apply(categorise_selector)
-                df = df[df["Clean Label"] != "COOKIE CONSENT BANNER"]
+                if df.empty:
+                    st.warning("⚠️ The uploaded Clarity CSV export contains 0 recorded clicks/taps.")
+                else:
+                    count_col = 'Clicks' if 'Clicks' in df.columns else 'Taps' if 'Taps' in df.columns else df.columns[2]
+                    df[count_col] = df[count_col].astype(str).str.replace(",", "").astype(int)
+                    df["Clean Label"] = df["Button"].apply(categorise_selector)
 
-                consolidated = (
-                    df.groupby("Clean Label", as_index=False)
-                    .agg(Clicks=(count_col, "sum"), Elements_Merged=("Button", "count"))
-                    .sort_values(by="Clicks", ascending=False)
-                )
+                    if exclude_cookies:
+                        df = df[df["Clean Label"] != "COOKIE CONSENT BANNER"]
 
-                total_clicks = consolidated["Clicks"].sum()
-                pct_col_name = f"% OF TOTAL {count_col.upper()}"
-                consolidated[pct_col_name] = ((consolidated["Clicks"] / total_clicks) * 100 if total_clicks > 0 else 0).round(2)
+                    consolidated = (
+                        df.groupby("Clean Label", as_index=False)
+                        .agg(Clicks=(count_col, "sum"), Elements_Merged=("Button", "count"))
+                        .sort_values(by="Clicks", ascending=False)
+                    )
 
-                st.session_state.consolidated = consolidated
-                st.session_state.count_col = count_col
-                st.session_state.pct_col_name = pct_col_name
+                    total_clicks = consolidated["Clicks"].sum()
+                    pct_col_name = f"% OF TOTAL {count_col.upper()}"
+                    consolidated[pct_col_name] = ((consolidated["Clicks"] / total_clicks) * 100 if total_clicks > 0 else 0).round(2)
 
-                st.success("CSV Uploaded and Consolidated Successfully!")
-                st.dataframe(consolidated)
+                    st.session_state.consolidated = consolidated
+                    st.session_state.count_col = count_col
+                    st.session_state.pct_col_name = pct_col_name
+
+                    st.markdown("---")
+                    m1, m2, m3 = st.columns(3)
+                    with m1:
+                        st.markdown(f'<div class="brand-card"><div class="brand-card-label">RAW CSV ROWS</div><div class="brand-card-value">{len(df):,}</div></div>', unsafe_allow_html=True)
+                    with m2:
+                        st.markdown(f'<div class="brand-card"><div class="brand-card-label">UI COMPONENTS</div><div class="brand-card-value">{len(consolidated):,}</div></div>', unsafe_allow_html=True)
+                    with m3:
+                        st.markdown(f'<div class="brand-card"><div class="brand-card-label">ANALYSED {count_col.upper()}</div><div class="brand-card-value">{total_clicks:,}</div></div>', unsafe_allow_html=True)
+
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.subheader(f"CLICK DISTRIBUTION BREAKDOWN — {report_title}")
+
+                    tab1, tab2 = st.tabs(["VISUAL BREAKDOWN", "DATA TABLE"])
+                    with tab1:
+                        fig_bar = px.bar(
+                            consolidated.head(12), x="Clicks", y="Clean Label", orientation="h",
+                            text=pct_col_name, labels={"Clicks": f"TOTAL {count_col.upper()}", "Clean Label": "COMPONENT"},
+                            color_discrete_sequence=["#564941"]
+                        )
+                        fig_bar.update_layout(font_family="IBM Plex Mono", font_color="#181916", yaxis={"categoryorder": "total ascending"}, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=480, margin=dict(l=20, r=20, t=30, b=20))
+                        fig_bar.update_traces(texttemplate="%{text:.2f}%", textposition="outside", marker_line_color="#181916", marker_line_width=1)
+                        st.plotly_chart(fig_bar, use_container_width=True)
+
+                    with tab2:
+                        st.dataframe(consolidated.style.format({"Clicks": "{:,}", pct_col_name: "{:.2f}%"}), use_container_width=True)
+
+                    csv_buffer = consolidated.to_csv(index=False).encode("utf-8")
+                    st.download_button("📥 DOWNLOAD BRANDED REPORT (.CSV)", data=csv_buffer, file_name=dynamic_export_filename, mime="text/csv")
         except Exception as e:
-            st.error(f"Error processing CSV: {e}")
+            st.error(f"Error processing CSV file: {e}")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # PAGE 2: Executive Summary
 elif page == "2. EXECUTIVE SUMMARY":
     st.title("EXECUTIVE CRO AUDIT SUMMARY")
-    st.markdown(
-        f"""
-        <div class="report-section">
-            <h3>CLIENT: {active_client}</h3>
-            <p><strong>JOURNEY SCOPE:</strong> {journey_scope}</p>
-            <p><strong>TIMEFRAME:</strong> {start_date} to {end_date}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if st.session_state.consolidated is not None:
+        c_df = st.session_state.consolidated
+        top_component = c_df.iloc[0]["Clean Label"]
+        top_pct = c_df.iloc[0][st.session_state.pct_col_name]
+
+        st.markdown(
+            f"""
+            <div class="report-section">
+                <h3>CLIENT: {active_client}</h3>
+                <p><strong>JOURNEY SCOPE:</strong> {journey_scope}</p>
+                <p><strong>TIMEFRAME:</strong> {start_date} to {end_date}</p>
+                <p>This audit consolidates heatmaps and user touch points into clear CRO priorities. The single highest interacted UI component is <strong>{top_component}</strong>, capturing <strong>{top_pct}%</strong> of all non-cookie interactions.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.subheader("PRIMARY FINDINGS")
+        st.markdown(
+            f"""
+            * **Dominant Interaction:** `{top_component}` drives the majority of engagement ({top_pct}% of total non-cookie clicks).
+            * **Friction Identification:** Lower secondary component engagement indicates potential cognitive overload or hidden navigation elements.
+            * **Mobile Gesture Insight:** Mobile swipe interactions are best paired with explicit visual cues (like carousel arrows or pagination counter links).
+            """
+        )
+    else:
+        st.warning("Please sync API data or upload a Clarity CSV export on Page 1 first.")
 
 # PAGE 3: Component Audit
 elif page == "3. COMPONENT AUDIT":
     st.title("UI COMPONENT DEEP DIVE")
     if st.session_state.consolidated is not None:
-        st.dataframe(st.session_state.consolidated)
+        c_df = st.session_state.consolidated
+        for idx, row in c_df.head(6).iterrows():
+            st.markdown(
+                f"""
+                <div class="report-section">
+                    <h4>COMPONENT #{idx+1}: {row['Clean Label']}</h4>
+                    <p><strong>TOTAL INTERACTIONS:</strong> {row['Clicks']:,} ({row[st.session_state.pct_col_name]}%)</p>
+                    <p><strong>CRO OBSERVATION:</strong> High volume on this element highlights a crucial step in the user decision path. Ensure clear feedback states and optimal tap targets.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
     else:
-        st.warning("Please sync API data or upload a CSV on Page 1 first.")
+        st.warning("Please sync API data or upload a Clarity CSV export on Page 1 first.")
 
 # PAGE 4: CRO Recommendations
 elif page == "4. CRO RECOMMENDATIONS":
     st.title("STRATEGIC CRO RECOMMENDATIONS")
-    st.write("Dynamic CRO insights based on synchronized site journey metrics.")
+    if st.session_state.consolidated is not None:
+        qw, st_tests = generate_dynamic_cro_insights(
+            st.session_state.consolidated,
+            st.session_state.pct_col_name
+        )
+
+        st.subheader("1. QUICK WINS (LOW EFFORT / HIGH IMPACT)")
+        quick_wins_text = st.text_area(
+            "EDITABLE QUICK WINS",
+            value="\n\n".join(f"• {item}" for item in qw) if qw else "• Enlarge primary CTA tap targets on mobile viewports.",
+            height=200
+        )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.subheader("2. STRATEGIC AB TESTS (HIGH IMPACT)")
+        strategic_tests_text = st.text_area(
+            "EDITABLE STRATEGIC TESTS",
+            value="\n\n".join(f"• {item}" for item in st_tests) if st_tests else "• Test sticky Add to Cart bar vs. static inline CTA button on mobile scroll.",
+            height=200
+        )
+    else:
+        st.warning("Please sync API data or upload a Clarity CSV export on Page 1 first.")
