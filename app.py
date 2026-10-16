@@ -161,7 +161,7 @@ st.sidebar.markdown("<br>", unsafe_allow_html=True)
 st.sidebar.title("CLIENT WORKSPACE")
 active_client = st.sidebar.selectbox(
     "SELECT CLIENT PROJECT",
-    ["DU/ER UK", "PARKIT EU", "HUF Worldwide EU", "Jansport EU"]
+    ["DU/ER UK", "PARKIT EU", "HUF Worldwide EU"]
 )
 
 st.sidebar.title("DATE TIMEFRAME")
