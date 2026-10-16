@@ -24,12 +24,16 @@ def get_base64_image(image_path):
 
 card_base64 = get_base64_image("Card.png")
 
-# Official Microsoft Clarity Data Export API Connector
+# Official Microsoft Clarity Data Export API Connector (GET Request)
 def fetch_clarity_api_data(project_id, api_token, start_date, end_date, page_path=".*"):
     clean_project_id = str(project_id).strip().rstrip("/").split("/")[-1]
     
-    # Official Base Endpoint
-    url = f"https://www.clarity.ms/export-data/api/v1/project-live-insights?numOfDays=30"
+    # Calculate days requested (1 to 30 days max allowed by Clarity API)
+    total_days = (end_date - start_date).days + 1
+    num_days = min(max(total_days, 1), 30)
+    
+    # Official Microsoft Clarity Data Export API Endpoint
+    url = f"https://www.clarity.ms/export-data/api/v1/project-live-insights?numOfDays={num_days}"
     
     headers = {
         "Authorization": f"Bearer {api_token}",
@@ -37,42 +41,31 @@ def fetch_clarity_api_data(project_id, api_token, start_date, end_date, page_pat
         "User-Agent": "WeekdayAssembly-CROTool/1.0"
     }
     
-    total_days = (end_date - start_date).days + 1
-    num_days = min(max(total_days, 1), 30)
-    
-    # Payload matching Microsoft Open API spec
-    payload = {
-        "projectId": clean_project_id,
-        "numOfDays": num_days,
-        "dimension": "URL",
-        "regex": page_path
-    }
-    
     try:
-        req = urllib.request.Request(
-            url, 
-            data=json.dumps(payload).encode('utf-8'), 
-            headers=headers, 
-            method="POST"
-        )
+        req = urllib.request.Request(url, headers=headers, method="GET")
         with urllib.request.urlopen(req) as response:
             data = json.loads(response.read().decode())
+            
+            if not data:
+                st.warning("Connected successfully, but Clarity returned 0 records for this time range.")
+                return None
+                
             if isinstance(data, list):
-                return pd.DataFrame(data)
+                df = pd.DataFrame(data)
             elif isinstance(data, dict):
-                return pd.DataFrame([data])
-            return pd.DataFrame(data)
+                df = pd.DataFrame([data])
+            else:
+                df = pd.DataFrame(data)
+            
+            # Filter by project ID if API returns multiple project records
+            if "projectId" in df.columns:
+                df = df[df["projectId"] == clean_project_id]
+                
+            return df
+            
     except urllib.error.HTTPError as e:
-        # Fallback GET Request if POST is restricted by account scope
-        try:
-            get_url = f"https://www.clarity.ms/export-data/api/v1/project-live-insights?projectId={clean_project_id}&numOfDays={num_days}"
-            get_req = urllib.request.Request(get_url, headers=headers, method="GET")
-            with urllib.request.urlopen(get_req) as get_response:
-                get_data = json.loads(get_response.read().decode())
-                return pd.DataFrame(get_data)
-        except Exception as inner_e:
-            st.error(f"Clarity API Error ({e.code}): {e.reason}. Verification details: {inner_e}")
-            return None
+        st.error(f"Clarity API Error ({e.code}): {e.reason}. Please verify your API Token in Streamlit Secrets.")
+        return None
     except Exception as e:
         st.error(f"Error connecting to Clarity API: {e}")
         return None
