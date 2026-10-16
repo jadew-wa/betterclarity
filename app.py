@@ -26,22 +26,32 @@ card_base64 = get_base64_image("Card.png")
 
 # Function to fetch data directly from Microsoft Clarity Data Export API
 def fetch_clarity_api_data(project_id, api_token, start_date, end_date, page_path=".*"):
-    url = f"https://www.clarity.ms/export-data/api/v1/project/{project_id}/heatmaps"
+    # Correct Microsoft Clarity Data Export API Endpoint
+    url = f"https://www.clarity.ms/export-data/api/v1/project-live-insights/{project_id}"
     
     headers = {
         "Authorization": f"Bearer {api_token}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "User-Agent": "WeekdayAssembly-CROTool/1.0"
     }
     
-    num_days = (end_date - start_date).days + 1
+    # Calculate days (Clarity API caps queries to max 30 days)
+    total_days = (end_date - start_date).days + 1
+    num_days = min(max(total_days, 1), 30)
+    
     payload = {
-        "numOfDays": num_days if num_days > 0 else 1,
+        "numOfDays": num_days,
         "dimension": "URL",
         "regex": page_path
     }
     
     try:
-        req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method="POST")
+        req = urllib.request.Request(
+            url, 
+            data=json.dumps(payload).encode('utf-8'), 
+            headers=headers, 
+            method="POST"
+        )
         with urllib.request.urlopen(req) as response:
             data = json.loads(response.read().decode())
             return pd.DataFrame(data)
